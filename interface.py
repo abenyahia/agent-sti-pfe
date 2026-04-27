@@ -18,7 +18,6 @@ import streamlit.components.v1 as components
 import json
 import io
 import os
-import tempfile
 import pandas as pd
 from datetime import datetime
 from pipeline import pipeline_complet
@@ -120,6 +119,7 @@ def audio_tts(text: str, lang: str = "fr"):
     clean = text.strip()[:600]
     if not clean:
         return
+    # gTTS — requiert internet (fonctionne sur Streamlit Cloud)
     try:
         from gtts import gTTS
         tts = gTTS(text=clean, lang=lang, slow=False)
@@ -130,19 +130,8 @@ def audio_tts(text: str, lang: str = "fr"):
         return
     except Exception:
         pass
-    try:
-        import pyttsx3
-        engine = pyttsx3.init()
-        engine.setProperty("rate", 150)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            tmp = f.name
-        engine.save_to_file(clean, tmp)
-        engine.runAndWait()
-        with open(tmp, "rb") as f:
-            st.audio(f.read(), format="audio/wav", autoplay=True)
-        os.unlink(tmp)
-    except Exception:
-        st.caption("🔇 Audio indisponible")
+    # Pas d'audio disponible — message discret
+    st.caption("🔇 Audio temporairement indisponible")
 
 
 def render_mermaid(code: str, height: int = 500):

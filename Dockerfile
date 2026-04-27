@@ -23,7 +23,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # ─── Dépendances Python ───────────────────────────────────────────────────────
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-docker.txt .
+# En local Docker on utilise requirements-docker.txt (avec pyttsx3)
+RUN pip install --no-cache-dir -r requirements-docker.txt
 
 # ─── Copie du code source ─────────────────────────────────────────────────────
 COPY . .

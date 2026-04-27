@@ -11,9 +11,13 @@ services:
       - "8501:8501"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Variables Supabase (laisser vide en local — l'app utilisera sessions.json)
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_KEY=${SUPABASE_KEY:-}
+      # Mot de passe Espace enseignant (CHANGEZ-LE !)
+      - TEACHER_PASSWORD=${TEACHER_PASSWORD:-pfe2026}
     volumes:
       # Bind mount : ./data sur votre PC = /app/data dans le conteneur
-      # sessions.json est directement accessible depuis votre dossier projet
       - ./data:/app/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
