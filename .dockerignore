@@ -1,0 +1,12 @@
+.env
+.git
+__pycache__
+*.pyc
+*.pyo
+data/*.json
+.DS_Store
+*.egg-info
+dist/
+build/
+.pytest_cache/
+data/.gitkeep

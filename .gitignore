@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+data/sessions.json
+.DS_Store
+venv/
+*.egg-info/
+data/sessions.json

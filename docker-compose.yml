@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+  agent-sti:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent-pedagogique-sti
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      # Bind mount : ./data sur votre PC = /app/data dans le conteneur
+      # sessions.json est directement accessible depuis votre dossier projet
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
