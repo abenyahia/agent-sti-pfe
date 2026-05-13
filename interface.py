@@ -737,40 +737,41 @@ elif page == "👨‍🏫 Espace enseignant":
     st.success("✅ Connecté en tant qu'enseignant")
 
     # ── Statut Supabase ───────────────────────────────────────────────────────
-    from database import _get_supabase_client, _get_supabase_creds
+    from database import _get_database_url, _get_conn
     status = get_status_supabase()
     if status == "connecte":
-        st.success("🟢 **Supabase connecté** — données persistées dans le cloud")
+        st.success("🟢 **Neon connecté** — données persistées dans le cloud PostgreSQL")
     elif status == "erreur":
-        st.error("🔴 **Erreur Supabase** — vérifiez SUPABASE_URL et SUPABASE_KEY dans Secrets")
+        st.error("🔴 **Erreur Neon** — vérifiez DATABASE_URL dans les Secrets Streamlit")
     else:
         st.warning("🟡 **Mode local** — données dans sessions.json (perdues au redémarrage !)")
         with st.expander("ℹ️ Comment corriger ?"):
             st.markdown("""
 **Sur Streamlit Cloud :**
 1. Allez dans votre app → ⋮ (3 points) → **Settings** → **Secrets**
-2. Ajoutez ces deux lignes :
+2. Ajoutez cette ligne (copiez la Connection String depuis neon.tech) :
 ```
-SUPABASE_URL = "https://xxx.supabase.co"
-SUPABASE_KEY = "votre-cle-anon"
+DATABASE_URL = "postgresql://user:password@ep-xxx.eu-west-2.aws.neon.tech/neondb?sslmode=require"
 ```
 3. Cliquez **Save** — l'app redémarre automatiquement
 """)
 
-    if st.button("🔌 Tester la connexion Supabase"):
-        url, key = _get_supabase_creds()
-        st.code(f"URL : {'✅ ' + url[:35] + '...' if url else '❌ vide'}")
-        st.code(f"KEY : {'✅ ' + key[:20] + '...' if key else '❌ vide'}")
-        client = _get_supabase_client()
-        if client:
+    if st.button("🔌 Tester la connexion Neon"):
+        url = _get_database_url()
+        st.code(f"DATABASE_URL : {'✅ ' + url[:45] + '...' if url else '❌ vide'}")
+        conn = _get_conn()
+        if conn:
             try:
-                client.table("sessions").select("id").limit(1).execute()
-                st.success("✅ Supabase OK — table sessions accessible")
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM sessions")
+                n = cur.fetchone()[0]
+                conn.close()
+                st.success(f"✅ Neon OK — {n} sessions en base")
             except Exception as e:
                 st.error(f"❌ Table inaccessible : {e}")
-                st.caption("Avez-vous bien exécuté le SQL de création des tables ?")
+                st.caption("Exécutez le SQL de création des tables dans Neon SQL Editor")
         else:
-            st.error("❌ Connexion impossible — credentials manquants ou invalides")
+            st.error("❌ Connexion impossible — vérifiez DATABASE_URL dans les Secrets")
     st.markdown("---")
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Vue d'ensemble", "👥 Comparaison groupes",

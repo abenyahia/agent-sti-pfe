@@ -1,7 +1,7 @@
 """
-Couche de persistance — Supabase (cloud) avec fallback local JSON.
-- Sur Streamlit Cloud → Supabase (PostgreSQL hébergé)
-- En local Docker     → fichier sessions.json (fallback)
+Couche de persistance — Neon.tech PostgreSQL avec fallback local JSON.
+Neon : PostgreSQL gratuit, jamais en pause.
+Connection via DATABASE_URL dans Secrets Streamlit ou .env
 """
 import os
 import json
@@ -21,72 +21,56 @@ if not SESSIONS_FILE.exists():
     SESSIONS_FILE.write_text("[]", encoding="utf-8")
 
 
-def _get_supabase_creds() -> tuple:
-    """
-    Récupère SUPABASE_URL et SUPABASE_KEY.
-    Priorité : variables d'environnement (.env / Docker) → st.secrets (Streamlit Cloud).
-    Ne plante JAMAIS — retourne ("", "") si introuvable.
-    """
-    url = os.getenv("SUPABASE_URL", "").strip()
-    key = os.getenv("SUPABASE_KEY", "").strip()
-
-    # Si les deux sont dans .env / Docker env → on s'arrête là
-    if url and key:
-        return url, key
-
-    # Sinon on essaie st.secrets (Streamlit Cloud)
-    # IMPORTANT : accéder à st.secrets["KEY"] et non .get() pour éviter l'erreur silencieuse
+def _get_database_url() -> str:
+    url = os.getenv("DATABASE_URL", "").strip()
+    if url:
+        return url
     try:
         import streamlit as st
-        if hasattr(st, "secrets"):
-            s_url = st.secrets.get("SUPABASE_URL", "")
-            s_key = st.secrets.get("SUPABASE_KEY", "")
-            if s_url and s_key:
-                return s_url.strip(), s_key.strip()
-    except Exception as e:
-        log.debug(f"st.secrets non disponible : {e}")
-
-    return url, key  # peut être ("", "") si rien trouvé
+        url = st.secrets.get("DATABASE_URL", "").strip()
+        if url:
+            return url
+    except Exception:
+        pass
+    return ""
 
 
-def _get_supabase_client():
-    """
-    Crée et retourne un client Supabase.
-    Retourne None si credentials absents ou si le package supabase n'est pas installé.
-    """
-    url, key = _get_supabase_creds()
-    if not url or not key:
-        log.debug("Supabase non configuré — utilisation du fallback local")
+def _get_conn():
+    url = _get_database_url()
+    if not url:
         return None
     try:
-        from supabase import create_client
-        client = create_client(url, key)
-        log.debug("Client Supabase créé avec succès")
-        return client
+        import psycopg2
+        conn = psycopg2.connect(url, connect_timeout=10)
+        conn.autocommit = True
+        return conn
     except ImportError:
-        log.warning("Package supabase non installé — fallback local")
+        log.warning("psycopg2 non installe")
         return None
     except Exception as e:
-        log.error(f"Erreur création client Supabase : {e}")
+        log.error(f"Connexion Neon echouee : {e}")
         return None
 
 
-def get_status_supabase() -> str:
-    """Retourne 'connecte' / 'local' + message descriptif."""
-    url, key = _get_supabase_creds()
-    if not url or not key:
+def get_status_db() -> str:
+    if not _get_database_url():
         return "local"
-    client = _get_supabase_client()
-    return "connecte" if client else "erreur"
+    conn = _get_conn()
+    if conn:
+        conn.close()
+        return "connecte"
+    return "erreur"
+
+def get_status_supabase() -> str:
+    return get_status_db()
 
 
-# ─── Helper JSON local ────────────────────────────────────────────────────────
 def _lire_json(path: Path) -> list:
     try:
         if path.exists() and path.stat().st_size > 2:
             return json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:
-        log.error(f"Erreur lecture {path} : {e}")
+        log.error(f"Erreur lecture {path.name}: {e}")
     return []
 
 
@@ -97,157 +81,168 @@ def _ecrire_json(path: Path, data: list) -> bool:
         tmp.replace(path)
         return True
     except Exception as e:
-        log.error(f"Erreur écriture {path} : {e}")
+        log.error(f"Erreur ecriture {path.name}: {e}")
         return False
 
 
-# ─── Sessions ─────────────────────────────────────────────────────────────────
 def sauvegarder_session(data: dict) -> bool:
-    client = _get_supabase_client()
-    if client:
+    conn = _get_conn()
+    if conn:
         try:
-            row = {
-                "timestamp":         data["timestamp"],
-                "etudiant_code":     data["etudiant"],
-                "groupe":            data.get("groupe", "experimental"),
-                "niveau_academique": data.get("niveau_academique", ""),
-                "theme":             data.get("theme", ""),
-                "mode":              data.get("mode", "agent"),
-                "requete_originale": data["requete_originale"],
-                "requete_enrichie":  data.get("requete_enrichie", ""),
-                "reponse_sti":       data.get("reponse_sti", ""),
-                "format_reponse":    data.get("format_reponse", ""),
-                "diagnostic":        json.dumps(data.get("diagnostic", {}), ensure_ascii=False),
-                "evaluation":        json.dumps(data.get("evaluation", {}), ensure_ascii=False),
-                "phase_fading":      json.dumps(data.get("phase_fading", {}), ensure_ascii=False),
-                "score_global":      data.get("evaluation", {}).get("score_global", 0),
-                "bloom_level":       data.get("diagnostic", {}).get("bloom_level", 0),
-            }
-            client.table("sessions").insert(row).execute()
-            log.info(f"✅ Session sauvegardée Supabase ({data['etudiant']})")
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO sessions
+                (timestamp,etudiant_code,groupe,niveau_academique,theme,mode,
+                 requete_originale,requete_enrichie,reponse_sti,format_reponse,
+                 diagnostic,evaluation,phase_fading,score_global,bloom_level)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (
+                data["timestamp"], data["etudiant"],
+                data.get("groupe","experimental"), data.get("niveau_academique",""),
+                data.get("theme",""), data.get("mode","agent"),
+                data["requete_originale"], data.get("requete_enrichie",""),
+                data.get("reponse_sti",""), data.get("format_reponse",""),
+                json.dumps(data.get("diagnostic",{}), ensure_ascii=False),
+                json.dumps(data.get("evaluation",{}), ensure_ascii=False),
+                json.dumps(data.get("phase_fading",{}), ensure_ascii=False),
+                data.get("evaluation",{}).get("score_global",0),
+                data.get("diagnostic",{}).get("bloom_level",0),
+            ))
+            conn.close()
+            log.info(f"Session -> Neon ({data['etudiant']})")
             return True
         except Exception as e:
-            log.error(f"Erreur Supabase sauvegarder_session : {e} — fallback local")
+            log.error(f"Erreur Neon sauvegarder_session: {e}")
+            try: conn.close()
+            except: pass
 
-    # Fallback local
     sessions = _lire_json(SESSIONS_FILE)
     sessions.append(data)
     ok = _ecrire_json(SESSIONS_FILE, sessions)
-    if ok:
-        log.info(f"✅ Session sauvegardée localement ({len(sessions)} total)")
+    if ok: log.info(f"Session -> local ({len(sessions)} total)")
     return ok
 
 
 def charger_sessions() -> list:
-    client = _get_supabase_client()
-    if client:
+    conn = _get_conn()
+    if conn:
         try:
-            res = client.table("sessions").select("*").order("timestamp").execute()
-            sessions = []
-            for row in res.data:
-                sessions.append({
-                    "timestamp":         row.get("timestamp", ""),
-                    "etudiant":          row.get("etudiant_code", ""),
-                    "groupe":            row.get("groupe", "experimental"),
-                    "niveau_academique": row.get("niveau_academique", ""),
-                    "theme":             row.get("theme", ""),
-                    "mode":              row.get("mode", "agent"),
-                    "requete_originale": row.get("requete_originale", ""),
-                    "requete_enrichie":  row.get("requete_enrichie", ""),
-                    "reponse_sti":       row.get("reponse_sti", ""),
-                    "format_reponse":    row.get("format_reponse", ""),
-                    "diagnostic":        json.loads(row.get("diagnostic") or "{}"),
-                    "evaluation":        json.loads(row.get("evaluation") or "{}"),
-                    "phase_fading":      json.loads(row.get("phase_fading") or "{}"),
+            cur = conn.cursor()
+            cur.execute("""SELECT timestamp,etudiant_code,groupe,niveau_academique,
+                theme,mode,requete_originale,requete_enrichie,reponse_sti,
+                format_reponse,diagnostic,evaluation,phase_fading
+                FROM sessions ORDER BY timestamp""")
+            rows = cur.fetchall()
+            conn.close()
+            result = []
+            for r in rows:
+                def parse(v):
+                    if isinstance(v, dict): return v
+                    try: return json.loads(v or "{}")
+                    except: return {}
+                result.append({
+                    "timestamp": r[0] or "", "etudiant": r[1] or "",
+                    "groupe": r[2] or "experimental", "niveau_academique": r[3] or "",
+                    "theme": r[4] or "", "mode": r[5] or "agent",
+                    "requete_originale": r[6] or "", "requete_enrichie": r[7] or "",
+                    "reponse_sti": r[8] or "", "format_reponse": r[9] or "",
+                    "diagnostic": parse(r[10]), "evaluation": parse(r[11]),
+                    "phase_fading": parse(r[12]),
                 })
-            log.info(f"✅ {len(sessions)} sessions chargées depuis Supabase")
-            return sessions
+            log.info(f"{len(result)} sessions <- Neon")
+            return result
         except Exception as e:
-            log.error(f"Erreur Supabase charger_sessions : {e} — fallback local")
-
+            log.error(f"Erreur Neon charger_sessions: {e}")
+            try: conn.close()
+            except: pass
     return _lire_json(SESSIONS_FILE)
 
 
 def charger_sessions_etudiant(code: str) -> list:
     return sorted(
-        [s for s in charger_sessions() if s.get("etudiant", "").lower() == code.lower()],
-        key=lambda s: s.get("timestamp", "")
+        [s for s in charger_sessions() if s.get("etudiant","").lower()==code.lower()],
+        key=lambda s: s.get("timestamp","")
     )
 
 
-# ─── Inscriptions ─────────────────────────────────────────────────────────────
-def enregistrer_inscription(code: str, prenom: str, niveau: str,
-                              groupe: str, consentement: bool) -> bool:
-    client = _get_supabase_client()
-    row = {
-        "code": code, "prenom": prenom, "niveau": niveau,
-        "groupe": groupe, "consentement": consentement,
-        "date_inscription": datetime.now().isoformat(),
-    }
-    if client:
+def enregistrer_inscription(code, prenom, niveau, groupe, consentement) -> bool:
+    conn = _get_conn()
+    if conn:
         try:
-            client.table("inscriptions").upsert(row).execute()
-            log.info(f"✅ Inscription Supabase : {code}")
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO inscriptions (code,prenom,niveau,groupe,consentement,date_inscription)
+                VALUES (%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (code) DO UPDATE
+                SET prenom=EXCLUDED.prenom, niveau=EXCLUDED.niveau,
+                    groupe=EXCLUDED.groupe, consentement=EXCLUDED.consentement
+            """, (code, prenom, niveau, groupe, consentement, datetime.now().isoformat()))
+            conn.close()
             return True
         except Exception as e:
-            log.error(f"Erreur Supabase enregistrer_inscription : {e}")
-
+            log.error(f"Erreur Neon inscription: {e}")
+            try: conn.close()
+            except: pass
     f = DATA_DIR / "inscriptions.json"
     existants = [e for e in _lire_json(f) if e.get("code") != code]
-    existants.append(row)
+    existants.append({"code":code,"prenom":prenom,"niveau":niveau,"groupe":groupe,
+                       "consentement":consentement,"date_inscription":datetime.now().isoformat()})
     return _ecrire_json(f, existants)
 
 
 def get_inscription(code: str) -> dict:
-    client = _get_supabase_client()
-    if client:
+    conn = _get_conn()
+    if conn:
         try:
-            res = client.table("inscriptions").select("*").eq("code", code).execute()
-            if res.data:
-                return res.data[0]
+            cur = conn.cursor()
+            cur.execute("SELECT code,prenom,niveau,groupe,consentement,date_inscription FROM inscriptions WHERE code=%s", (code,))
+            row = cur.fetchone()
+            conn.close()
+            if row:
+                return {"code":row[0],"prenom":row[1],"niveau":row[2],
+                        "groupe":row[3],"consentement":row[4],"date_inscription":row[5]}
         except Exception as e:
-            log.error(f"Erreur Supabase get_inscription : {e}")
-
+            log.error(f"Erreur Neon get_inscription: {e}")
+            try: conn.close()
+            except: pass
     f = DATA_DIR / "inscriptions.json"
     for i in _lire_json(f):
-        if i.get("code") == code:
-            return i
+        if i.get("code") == code: return i
     return {}
 
 
-# ─── Questionnaires ───────────────────────────────────────────────────────────
-def enregistrer_questionnaire(code: str, type_q: str, reponses: dict) -> bool:
-    client = _get_supabase_client()
-    row = {
-        "code": code, "type": type_q,
-        "timestamp": datetime.now().isoformat(),
-        "reponses": json.dumps(reponses, ensure_ascii=False),
-    }
-    if client:
+def enregistrer_questionnaire(code, type_q, reponses) -> bool:
+    conn = _get_conn()
+    if conn:
         try:
-            client.table("questionnaires").insert(row).execute()
-            log.info(f"✅ Questionnaire Supabase : {code} / {type_q}")
+            cur = conn.cursor()
+            cur.execute("INSERT INTO questionnaires (code,type,timestamp,reponses) VALUES (%s,%s,%s,%s)",
+                (code, type_q, datetime.now().isoformat(), json.dumps(reponses, ensure_ascii=False)))
+            conn.close()
             return True
         except Exception as e:
-            log.error(f"Erreur Supabase enregistrer_questionnaire : {e}")
-
+            log.error(f"Erreur Neon questionnaire: {e}")
+            try: conn.close()
+            except: pass
     f = DATA_DIR / "questionnaires.json"
     existants = _lire_json(f)
-    existants.append(row)
+    existants.append({"code":code,"type":type_q,"timestamp":datetime.now().isoformat(),
+                       "reponses":json.dumps(reponses, ensure_ascii=False)})
     return _ecrire_json(f, existants)
 
 
-def a_complete_questionnaire(code: str, type_q: str) -> bool:
-    client = _get_supabase_client()
-    if client:
+def a_complete_questionnaire(code, type_q) -> bool:
+    conn = _get_conn()
+    if conn:
         try:
-            res = client.table("questionnaires").select("id").eq("code", code).eq("type", type_q).execute()
-            return len(res.data) > 0
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM questionnaires WHERE code=%s AND type=%s", (code, type_q))
+            count = cur.fetchone()[0]
+            conn.close()
+            return count > 0
         except Exception as e:
-            log.error(f"Erreur Supabase a_complete_questionnaire : {e}")
-
+            log.error(f"Erreur Neon a_complete_questionnaire: {e}")
+            try: conn.close()
+            except: pass
     f = DATA_DIR / "questionnaires.json"
-    return any(
-        q.get("code") == code and q.get("type") == type_q
-        for q in _lire_json(f)
-    )
+    return any(q.get("code")==code and q.get("type")==type_q for q in _lire_json(f))
