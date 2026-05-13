@@ -2,8 +2,6 @@
 Couche de persistance — Supabase (cloud) avec fallback local JSON.
 - Sur Streamlit Cloud → Supabase (PostgreSQL hébergé)
 - En local Docker     → fichier sessions.json (fallback)
-
-Le système détecte automatiquement la disponibilité de Supabase via les secrets/env.
 """
 import os
 import json
@@ -23,49 +21,98 @@ if not SESSIONS_FILE.exists():
     SESSIONS_FILE.write_text("[]", encoding="utf-8")
 
 
-def _get_supabase_creds():
-    """Récupère URL et clé Supabase depuis env ou st.secrets."""
-    url = os.getenv("SUPABASE_URL", "")
-    key = os.getenv("SUPABASE_KEY", "")
+def _get_supabase_creds() -> tuple:
+    """
+    Récupère SUPABASE_URL et SUPABASE_KEY.
+    Priorité : variables d'environnement (.env / Docker) → st.secrets (Streamlit Cloud).
+    Ne plante JAMAIS — retourne ("", "") si introuvable.
+    """
+    url = os.getenv("SUPABASE_URL", "").strip()
+    key = os.getenv("SUPABASE_KEY", "").strip()
+
+    # Si les deux sont dans .env / Docker env → on s'arrête là
     if url and key:
         return url, key
+
+    # Sinon on essaie st.secrets (Streamlit Cloud)
+    # IMPORTANT : accéder à st.secrets["KEY"] et non .get() pour éviter l'erreur silencieuse
     try:
         import streamlit as st
-        url = st.secrets.get("SUPABASE_URL", "") or url
-        key = st.secrets.get("SUPABASE_KEY", "") or key
-    except Exception:
-        pass
-    return url, key
+        if hasattr(st, "secrets"):
+            s_url = st.secrets.get("SUPABASE_URL", "")
+            s_key = st.secrets.get("SUPABASE_KEY", "")
+            if s_url and s_key:
+                return s_url.strip(), s_key.strip()
+    except Exception as e:
+        log.debug(f"st.secrets non disponible : {e}")
+
+    return url, key  # peut être ("", "") si rien trouvé
 
 
 def _get_supabase_client():
-    """Initialise le client Supabase si les credentials sont disponibles."""
+    """
+    Crée et retourne un client Supabase.
+    Retourne None si credentials absents ou si le package supabase n'est pas installé.
+    """
     url, key = _get_supabase_creds()
-    if not (url and key):
+    if not url or not key:
+        log.debug("Supabase non configuré — utilisation du fallback local")
         return None
     try:
         from supabase import create_client
-        return create_client(url, key)
+        client = create_client(url, key)
+        log.debug("Client Supabase créé avec succès")
+        return client
+    except ImportError:
+        log.warning("Package supabase non installé — fallback local")
+        return None
     except Exception as e:
-        log.warning(f"Supabase indisponible : {e}")
+        log.error(f"Erreur création client Supabase : {e}")
         return None
 
 
-# ─── Persistance des sessions (interactions étudiant) ─────────────────────────
+def get_status_supabase() -> str:
+    """Retourne 'connecte' / 'local' + message descriptif."""
+    url, key = _get_supabase_creds()
+    if not url or not key:
+        return "local"
+    client = _get_supabase_client()
+    return "connecte" if client else "erreur"
+
+
+# ─── Helper JSON local ────────────────────────────────────────────────────────
+def _lire_json(path: Path) -> list:
+    try:
+        if path.exists() and path.stat().st_size > 2:
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        log.error(f"Erreur lecture {path} : {e}")
+    return []
+
+
+def _ecrire_json(path: Path, data: list) -> bool:
+    try:
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+        return True
+    except Exception as e:
+        log.error(f"Erreur écriture {path} : {e}")
+        return False
+
+
+# ─── Sessions ─────────────────────────────────────────────────────────────────
 def sauvegarder_session(data: dict) -> bool:
-    """
-    Sauvegarde une session dans Supabase si dispo, sinon dans sessions.json local.
-    """
     client = _get_supabase_client()
     if client:
         try:
             row = {
                 "timestamp":         data["timestamp"],
-                "etudiant_code":     data["etudiant"],          # code anonymisé
+                "etudiant_code":     data["etudiant"],
                 "groupe":            data.get("groupe", "experimental"),
                 "niveau_academique": data.get("niveau_academique", ""),
                 "theme":             data.get("theme", ""),
-                "mode":              data.get("mode", "agent"),  # 'controle' ou 'agent'
+                "mode":              data.get("mode", "agent"),
                 "requete_originale": data["requete_originale"],
                 "requete_enrichie":  data.get("requete_enrichie", ""),
                 "reponse_sti":       data.get("reponse_sti", ""),
@@ -77,32 +124,21 @@ def sauvegarder_session(data: dict) -> bool:
                 "bloom_level":       data.get("diagnostic", {}).get("bloom_level", 0),
             }
             client.table("sessions").insert(row).execute()
-            log.info(f"Session sauvegardée Supabase ({data['etudiant']})")
+            log.info(f"✅ Session sauvegardée Supabase ({data['etudiant']})")
             return True
         except Exception as e:
-            log.error(f"Erreur Supabase, fallback local : {e}")
+            log.error(f"Erreur Supabase sauvegarder_session : {e} — fallback local")
 
     # Fallback local
-    try:
-        sessions = []
-        if SESSIONS_FILE.exists() and SESSIONS_FILE.stat().st_size > 2:
-            try:
-                sessions = json.loads(SESSIONS_FILE.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                sessions = []
-        sessions.append(data)
-        tmp = SESSIONS_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(sessions, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(SESSIONS_FILE)
-        log.info(f"Session sauvegardée localement ({len(sessions)} total)")
-        return True
-    except Exception as e:
-        log.error(f"Erreur sauvegarde locale : {e}")
-        return False
+    sessions = _lire_json(SESSIONS_FILE)
+    sessions.append(data)
+    ok = _ecrire_json(SESSIONS_FILE, sessions)
+    if ok:
+        log.info(f"✅ Session sauvegardée localement ({len(sessions)} total)")
+    return ok
 
 
 def charger_sessions() -> list:
-    """Charge toutes les sessions (Supabase si dispo, sinon local)."""
     client = _get_supabase_client()
     if client:
         try:
@@ -120,69 +156,49 @@ def charger_sessions() -> list:
                     "requete_enrichie":  row.get("requete_enrichie", ""),
                     "reponse_sti":       row.get("reponse_sti", ""),
                     "format_reponse":    row.get("format_reponse", ""),
-                    "diagnostic":        json.loads(row.get("diagnostic", "{}") or "{}"),
-                    "evaluation":        json.loads(row.get("evaluation", "{}") or "{}"),
-                    "phase_fading":      json.loads(row.get("phase_fading", "{}") or "{}"),
+                    "diagnostic":        json.loads(row.get("diagnostic") or "{}"),
+                    "evaluation":        json.loads(row.get("evaluation") or "{}"),
+                    "phase_fading":      json.loads(row.get("phase_fading") or "{}"),
                 })
+            log.info(f"✅ {len(sessions)} sessions chargées depuis Supabase")
             return sessions
         except Exception as e:
-            log.error(f"Erreur lecture Supabase, fallback local : {e}")
+            log.error(f"Erreur Supabase charger_sessions : {e} — fallback local")
 
-    # Fallback local
-    try:
-        if SESSIONS_FILE.exists() and SESSIONS_FILE.stat().st_size > 2:
-            return json.loads(SESSIONS_FILE.read_text(encoding="utf-8"))
-    except Exception as e:
-        log.error(f"Erreur lecture : {e}")
-    return []
+    return _lire_json(SESSIONS_FILE)
 
 
 def charger_sessions_etudiant(code: str) -> list:
-    """Sessions d'un étudiant donné (par son code anonymisé)."""
     return sorted(
         [s for s in charger_sessions() if s.get("etudiant", "").lower() == code.lower()],
         key=lambda s: s.get("timestamp", "")
     )
 
 
-# ─── Inscriptions étudiants (table 'inscriptions') ────────────────────────────
-def enregistrer_inscription(code: str, prenom: str, niveau: str, groupe: str,
-                              consentement: bool) -> bool:
-    """Enregistre l'inscription initiale d'un étudiant avec son groupe (A/B)."""
+# ─── Inscriptions ─────────────────────────────────────────────────────────────
+def enregistrer_inscription(code: str, prenom: str, niveau: str,
+                              groupe: str, consentement: bool) -> bool:
     client = _get_supabase_client()
     row = {
-        "code":          code,
-        "prenom":        prenom,
-        "niveau":        niveau,
-        "groupe":        groupe,             # 'controle' ou 'experimental'
-        "consentement":  consentement,
+        "code": code, "prenom": prenom, "niveau": niveau,
+        "groupe": groupe, "consentement": consentement,
         "date_inscription": datetime.now().isoformat(),
     }
     if client:
         try:
             client.table("inscriptions").upsert(row).execute()
+            log.info(f"✅ Inscription Supabase : {code}")
             return True
         except Exception as e:
-            log.error(f"Erreur inscription Supabase : {e}")
+            log.error(f"Erreur Supabase enregistrer_inscription : {e}")
 
-    # Fallback local
-    try:
-        f = DATA_DIR / "inscriptions.json"
-        existants = []
-        if f.exists() and f.stat().st_size > 2:
-            existants = json.loads(f.read_text(encoding="utf-8"))
-        # Upsert : remplacer si code existe déjà
-        existants = [e for e in existants if e.get("code") != code]
-        existants.append(row)
-        f.write_text(json.dumps(existants, ensure_ascii=False, indent=2), encoding="utf-8")
-        return True
-    except Exception as e:
-        log.error(f"Erreur inscription locale : {e}")
-        return False
+    f = DATA_DIR / "inscriptions.json"
+    existants = [e for e in _lire_json(f) if e.get("code") != code]
+    existants.append(row)
+    return _ecrire_json(f, existants)
 
 
 def get_inscription(code: str) -> dict:
-    """Récupère les infos d'inscription (groupe, niveau, etc.) depuis le code."""
     client = _get_supabase_client()
     if client:
         try:
@@ -190,73 +206,48 @@ def get_inscription(code: str) -> dict:
             if res.data:
                 return res.data[0]
         except Exception as e:
-            log.error(f"Erreur lecture inscription Supabase : {e}")
+            log.error(f"Erreur Supabase get_inscription : {e}")
 
-    # Fallback local
-    try:
-        f = DATA_DIR / "inscriptions.json"
-        if f.exists() and f.stat().st_size > 2:
-            inscriptions = json.loads(f.read_text(encoding="utf-8"))
-            for i in inscriptions:
-                if i.get("code") == code:
-                    return i
-    except Exception:
-        pass
+    f = DATA_DIR / "inscriptions.json"
+    for i in _lire_json(f):
+        if i.get("code") == code:
+            return i
     return {}
 
 
-# ─── Questionnaires pré/post ─────────────────────────────────────────────────
+# ─── Questionnaires ───────────────────────────────────────────────────────────
 def enregistrer_questionnaire(code: str, type_q: str, reponses: dict) -> bool:
-    """Enregistre les réponses au questionnaire pré-test ou post-test."""
     client = _get_supabase_client()
     row = {
-        "code":      code,
-        "type":      type_q,                # 'pretest' ou 'posttest'
+        "code": code, "type": type_q,
         "timestamp": datetime.now().isoformat(),
-        "reponses":  json.dumps(reponses, ensure_ascii=False),
+        "reponses": json.dumps(reponses, ensure_ascii=False),
     }
     if client:
         try:
             client.table("questionnaires").insert(row).execute()
+            log.info(f"✅ Questionnaire Supabase : {code} / {type_q}")
             return True
         except Exception as e:
-            log.error(f"Erreur questionnaire Supabase : {e}")
+            log.error(f"Erreur Supabase enregistrer_questionnaire : {e}")
 
-    # Fallback local
-    try:
-        f = DATA_DIR / "questionnaires.json"
-        existants = []
-        if f.exists() and f.stat().st_size > 2:
-            existants = json.loads(f.read_text(encoding="utf-8"))
-        existants.append(row)
-        f.write_text(json.dumps(existants, ensure_ascii=False, indent=2), encoding="utf-8")
-        return True
-    except Exception as e:
-        log.error(f"Erreur questionnaire local : {e}")
-        return False
+    f = DATA_DIR / "questionnaires.json"
+    existants = _lire_json(f)
+    existants.append(row)
+    return _ecrire_json(f, existants)
 
 
 def a_complete_questionnaire(code: str, type_q: str) -> bool:
-    """Vérifie si l'étudiant a déjà complété un questionnaire donné."""
     client = _get_supabase_client()
     if client:
         try:
             res = client.table("questionnaires").select("id").eq("code", code).eq("type", type_q).execute()
             return len(res.data) > 0
-        except Exception:
-            pass
+        except Exception as e:
+            log.error(f"Erreur Supabase a_complete_questionnaire : {e}")
 
-    try:
-        f = DATA_DIR / "questionnaires.json"
-        if f.exists() and f.stat().st_size > 2:
-            qs = json.loads(f.read_text(encoding="utf-8"))
-            return any(q.get("code") == code and q.get("type") == type_q for q in qs)
-    except Exception:
-        pass
-    return False
-
-
-# ─── Statistiques pour le dashboard enseignant ────────────────────────────────
-def get_status_supabase() -> str:
-    """Retourne 'connecte' / 'local' selon l'état."""
-    return "connecte" if _get_supabase_client() else "local"
+    f = DATA_DIR / "questionnaires.json"
+    return any(
+        q.get("code") == code and q.get("type") == type_q
+        for q in _lire_json(f)
+    )

@@ -735,9 +735,43 @@ elif page == "👨‍🏫 Espace enseignant":
         st.stop()
 
     st.success("✅ Connecté en tant qu'enseignant")
-    st.caption(f"Statut base de données : **{get_status_supabase()}** "
-               f"({'Supabase cloud' if get_status_supabase() == 'connecte' else 'fichier local'})")
 
+    # ── Statut Supabase ───────────────────────────────────────────────────────
+    from database import _get_supabase_client, _get_supabase_creds
+    status = get_status_supabase()
+    if status == "connecte":
+        st.success("🟢 **Supabase connecté** — données persistées dans le cloud")
+    elif status == "erreur":
+        st.error("🔴 **Erreur Supabase** — vérifiez SUPABASE_URL et SUPABASE_KEY dans Secrets")
+    else:
+        st.warning("🟡 **Mode local** — données dans sessions.json (perdues au redémarrage !)")
+        with st.expander("ℹ️ Comment corriger ?"):
+            st.markdown("""
+**Sur Streamlit Cloud :**
+1. Allez dans votre app → ⋮ (3 points) → **Settings** → **Secrets**
+2. Ajoutez ces deux lignes :
+```
+SUPABASE_URL = "https://xxx.supabase.co"
+SUPABASE_KEY = "votre-cle-anon"
+```
+3. Cliquez **Save** — l'app redémarre automatiquement
+""")
+
+    if st.button("🔌 Tester la connexion Supabase"):
+        url, key = _get_supabase_creds()
+        st.code(f"URL : {'✅ ' + url[:35] + '...' if url else '❌ vide'}")
+        st.code(f"KEY : {'✅ ' + key[:20] + '...' if key else '❌ vide'}")
+        client = _get_supabase_client()
+        if client:
+            try:
+                client.table("sessions").select("id").limit(1).execute()
+                st.success("✅ Supabase OK — table sessions accessible")
+            except Exception as e:
+                st.error(f"❌ Table inaccessible : {e}")
+                st.caption("Avez-vous bien exécuté le SQL de création des tables ?")
+        else:
+            st.error("❌ Connexion impossible — credentials manquants ou invalides")
+    st.markdown("---")
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Vue d'ensemble", "👥 Comparaison groupes",
         "🎫 Générer codes", "📥 Export CSV"
