@@ -170,14 +170,30 @@ def render_reponse(result: dict, audio_on: bool):
     elif fmt == "tableau":
         st.markdown(contenu)
     elif fmt == "image":
-        kw = meta.get("keywords", "education")
+        kw  = meta.get("keywords", "education learning")
         emoji = meta.get("emoji", "🎓")
         col1, col2 = st.columns([1, 1])
         with col1:
+            img_url = None
             try:
-                st.image(url_image_unsplash(kw), caption=f"Illustration : {kw}", use_container_width=True)
+                from formatters import chercher_image_wikimedia
+                img_url = chercher_image_wikimedia(kw)
             except Exception:
-                st.markdown(f"<div style='font-size:8rem;text-align:center'>{emoji}</div>", unsafe_allow_html=True)
+                pass
+
+            if img_url:
+                st.image(img_url,
+                         caption=f"📷 {kw} — Wikimedia Commons",
+                         use_container_width=True)
+            else:
+                # Fallback : grand emoji + fond coloré
+                st.markdown(
+                    f"<div style='font-size:7rem;text-align:center;"
+                    f"background:var(--color-background-secondary);"
+                    f"border-radius:12px;padding:20px'>{emoji}</div>",
+                    unsafe_allow_html=True
+                )
+                st.caption(f"Illustration non disponible pour : {kw}")
         with col2:
             st.write(contenu)
     elif fmt == "audio":

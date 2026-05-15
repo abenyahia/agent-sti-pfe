@@ -131,11 +131,41 @@ def generer_reponse_sti(question_enrichie: str, format_choisi: str = "texte") ->
     }
 
 
-# ─── Recherche d'image via Unsplash (source.unsplash.com, pas de clé API requise) ──
-def url_image_unsplash(keywords: str) -> str:
+# ─── Recherche d'image via Wikimedia Commons API (gratuit, sans clé) ─────────────
+def chercher_image_wikimedia(keywords: str) -> str | None:
     """
-    Retourne une URL d'image Unsplash basée sur les mots-clés.
-    Utilise le service public source.unsplash.com — gratuit, pas d'authentification.
+    Cherche une image sur Wikimedia Commons via l'API publique.
+    Retourne l'URL de l'image ou None si introuvable.
+    Avantages : 100% gratuit, pas de clé API, images libres de droits.
     """
-    clean = keywords.replace(" ", ",").replace(",,", ",")[:80]
-    return f"https://source.unsplash.com/800x500/?{clean}"
+    import urllib.parse
+    import urllib.request
+    import json
+
+    try:
+        q = urllib.parse.quote(keywords[:80])
+        api_url = (
+            "https://en.wikipedia.org/w/api.php"
+            f"?action=query&generator=search&gsrsearch={q}&gsrnamespace=6"
+            "&prop=imageinfo&iiprop=url|mime&iiurlwidth=800"
+            "&gsrlimit=3&format=json&origin=*"
+        )
+        req = urllib.request.Request(api_url, headers={"User-Agent": "PFE-STI/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read())
+        pages = data.get("query", {}).get("pages", {})
+        for page in pages.values():
+            info = page.get("imageinfo", [{}])[0]
+            mime = info.get("mime", "")
+            url = info.get("thumburl") or info.get("url", "")
+            # Exclure SVG et fichiers non-image
+            if url and "image" in mime and "svg" not in mime:
+                return url
+    except Exception:
+        pass
+    return None
+
+
+def url_image_unsplash(keywords: str) -> str | None:
+    """Alias maintenu pour compatibilité — utilise Wikimedia Commons."""
+    return chercher_image_wikimedia(keywords)
