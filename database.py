@@ -246,3 +246,55 @@ def a_complete_questionnaire(code, type_q) -> bool:
             except: pass
     f = DATA_DIR / "questionnaires.json"
     return any(q.get("code")==code and q.get("type")==type_q for q in _lire_json(f))
+
+
+# ─── Codes pré-définis (groupe fixé par l'enseignant avant distribution) ──────
+def preenregistrer_codes(codes: list) -> bool:
+    """
+    Enregistre les codes avec leur groupe AVANT distribution aux étudiants.
+    codes = [{"code": "STI-K7M2", "groupe": "controle"}, ...]
+    Appelé par l'espace enseignant au moment de la génération.
+    """
+    conn = _get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            for item in codes:
+                cur.execute("""
+                    INSERT INTO inscriptions (code, groupe, consentement, date_inscription)
+                    VALUES (%s, %s, FALSE, %s)
+                    ON CONFLICT (code) DO UPDATE
+                    SET groupe = EXCLUDED.groupe
+                """, (item["code"], item["groupe"], datetime.now().isoformat()))
+            conn.close()
+            log.info(f"✅ {len(codes)} codes pré-enregistrés dans Neon")
+            return True
+        except Exception as e:
+            log.error(f"Erreur pré-enregistrement Neon : {e}")
+            try: conn.close()
+            except: pass
+
+    # Fallback local
+    f = DATA_DIR / "inscriptions.json"
+    existants = _lire_json(f)
+    for item in codes:
+        existants = [e for e in existants if e.get("code") != item["code"]]
+        existants.append({
+            "code": item["code"],
+            "groupe": item["groupe"],
+            "consentement": False,
+            "date_inscription": datetime.now().isoformat(),
+        })
+    return _ecrire_json(f, existants)
+
+
+def get_groupe_predefini(code: str) -> str | None:
+    """
+    Récupère le groupe pré-défini pour un code donné.
+    Retourne 'controle', 'experimental', ou None si le code est inconnu.
+    """
+    inscription = get_inscription(code)
+    groupe = inscription.get("groupe")
+    if groupe in ("controle", "experimental"):
+        return groupe
+    return None

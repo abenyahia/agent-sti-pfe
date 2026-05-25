@@ -24,7 +24,7 @@ from pipeline import pipeline_complet
 from database import (
     charger_sessions, charger_sessions_etudiant, get_inscription,
     enregistrer_inscription, enregistrer_questionnaire, a_complete_questionnaire,
-    get_status_supabase, SESSIONS_FILE
+    get_status_supabase, preenregistrer_codes, get_groupe_predefini, SESSIONS_FILE
 )
 from codes_etudiants import generer_lot_codes, assignation_aleatoire_groupe
 from questionnaires import (
@@ -82,6 +82,11 @@ try:
     TEACHER_PASSWORD = st.secrets.get("TEACHER_PASSWORD", TEACHER_PASSWORD)
 except Exception:
     pass
+
+
+def _get_groupe_predefini(code: str) -> str | None:
+    """Récupère le groupe pré-défini pour ce code depuis la base."""
+    return get_groupe_predefini(code)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -334,7 +339,10 @@ améliorer la qualité de vos questions et votre apprentissage.
             elif not prenom.strip():
                 st.error("Veuillez indiquer votre prénom.")
             else:
-                groupe = assignation_aleatoire_groupe(st.session_state.code_etudiant)
+                # Récupérer le groupe pré-défini lors de la génération des codes
+                # (stocké dans la table 'codes_predefinis' ou dans 'inscriptions' sans consentement)
+                groupe_predefini = _get_groupe_predefini(st.session_state.code_etudiant)
+                groupe = groupe_predefini if groupe_predefini else assignation_aleatoire_groupe(st.session_state.code_etudiant)
                 ok = enregistrer_inscription(
                     code=st.session_state.code_etudiant,
                     prenom=prenom.strip(),
@@ -898,10 +906,18 @@ DATABASE_URL = "postgresql://user:password@ep-xxx.eu-west-2.aws.neon.tech/neondb
         with col2:
             n_exp = st.number_input("Nombre groupe expérimental", min_value=1, max_value=100, value=30)
 
-        if st.button("🎫 Générer les codes"):
+        if st.button("🎫 Générer et enregistrer les codes"):
             codes = generer_lot_codes(n_ctrl, n_exp)
             df_codes = pd.DataFrame(codes)
-            st.success(f"✅ {len(codes)} codes générés")
+
+            # Pré-enregistrer immédiatement dans Neon avec le bon groupe
+            ok = preenregistrer_codes(codes)
+
+            if ok:
+                st.success(f"✅ {len(codes)} codes générés et enregistrés dans la base avec leur groupe")
+            else:
+                st.warning("⚠️ Codes générés mais non enregistrés en base — vérifiez la connexion Neon")
+
             st.dataframe(df_codes, use_container_width=True, hide_index=True)
 
             csv = df_codes.to_csv(index=False).encode("utf-8")
@@ -911,10 +927,9 @@ DATABASE_URL = "postgresql://user:password@ep-xxx.eu-west-2.aws.neon.tech/neondb
                 "codes_etudiants.csv",
                 "text/csv"
             )
-
-            st.warning("⚠️ **Important** : Ces codes ne sont PAS encore enregistrés dans la base. "
-                        "Ils sont simplement générés. L'étudiant les enregistre lui-même "
-                        "lors de sa première inscription en validant le consentement.")
+            st.info("ℹ️ Les groupes sont maintenant fixés en base. "
+                    "Quand l'étudiant entre son code, il sera automatiquement "
+                    "assigné au bon groupe sans calcul aléatoire.")
 
     # ─── TAB 4 : Export CSV ───────────────────────────────────────────────────
     with tab4:
