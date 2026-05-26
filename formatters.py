@@ -13,6 +13,7 @@ L'agent peut suggérer un format, mais l'étudiant peut forcer son choix.
 import anthropic
 import json
 import re
+from typing import Optional
 from config import get_api_key
 
 
@@ -132,7 +133,7 @@ def generer_reponse_sti(question_enrichie: str, format_choisi: str = "texte") ->
 
 
 # ─── Recherche d'image via Wikimedia Commons API (gratuit, sans clé) ─────────────
-def chercher_image_wikimedia(keywords: str) -> str | None:
+def chercher_image_wikimedia(keywords: str) -> Optional[str]:
     """
     Cherche une image sur Wikimedia Commons via l'API publique.
     Retourne l'URL de l'image ou None si introuvable.
@@ -166,6 +167,6 @@ def chercher_image_wikimedia(keywords: str) -> str | None:
     return None
 
 
-def url_image_unsplash(keywords: str) -> str | None:
+def url_image_unsplash(keywords: str) -> Optional[str]:
     """Alias maintenu pour compatibilité — utilise Wikimedia Commons."""
     return chercher_image_wikimedia(keywords)
